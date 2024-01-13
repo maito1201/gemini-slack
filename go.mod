@@ -1,12 +1,10 @@
-module github.com/maito1201/gemini-slack/gcp
+module github.com/maito1201/gemini-slack
 
 go 1.20
 
-require (
-	github.com/google/generative-ai-go v0.5.0
-	github.com/slack-go/slack v0.12.3
-	google.golang.org/api v0.156.0
-)
+replace github.com/maito1201/gemini-slack/gcp => ./gcp
+
+require github.com/maito1201/gemini-slack/gcp v0.0.0-00010101000000-000000000000
 
 require (
 	cloud.google.com/go/ai v0.3.0 // indirect
@@ -18,10 +16,12 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/google/generative-ai-go v0.5.0 // indirect
 	github.com/google/s2a-go v0.1.7 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.2 // indirect
 	github.com/googleapis/gax-go/v2 v2.12.0 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
+	github.com/slack-go/slack v0.12.3 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.46.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.46.1 // indirect
@@ -35,6 +35,7 @@ require (
 	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
+	google.golang.org/api v0.156.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/genproto v0.0.0-20231212172506-995d672761c0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20231212172506-995d672761c0 // indirect

@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/slack-go/slack"
@@ -52,71 +54,136 @@ func init() {
 	geminiAPIKey = os.Getenv("GEMINI_API_KEY")
 }
 
+var mentionRxp = regexp.MustCompile("<@.*>")
+
 func GeminiSlack(w http.ResponseWriter, r *http.Request) {
+	p, doNext := handleParameter(w, r)
+	if !doNext {
+		return
+	}
+	go func(p *Payload) {
+		ctx, _ := context.WithTimeout(context.Background(), time.Minute*3)
+		// Initialize Slack
+		api := slack.New(botToken)
+
+		// Initialize Gemini API
+		client, err := genai.NewClient(ctx, option.WithAPIKey(geminiAPIKey))
+		if err != nil {
+			log.Fatalf("genai.NewClient %s", err)
+		}
+		defer client.Close()
+		model := client.GenerativeModel("gemini-pro")
+		cs := model.StartChat()
+
+		// Get Reply History
+		replyParams := &slack.GetConversationRepliesParameters{
+			ChannelID:          p.Event.Channel,
+			IncludeAllMetadata: false,
+		}
+		if p.Event.ThreadTS != "" {
+			replyParams.Timestamp = p.Event.ThreadTS
+		} else if p.Event.TS != "" {
+			replyParams.Timestamp = p.Event.TS
+		}
+
+		// Build Chat History
+		msgs, _, _, err := api.GetConversationRepliesContext(ctx, replyParams)
+		for _, m := range msgs {
+			log.Printf("msgs %v\n", m)
+		}
+		if len(msgs) > 0 {
+			msgs = msgs[:len(msgs)-1]
+		}
+		histories := make([]*genai.Content, len(msgs))
+		for i, v := range msgs {
+			role := "user"
+			t := mentionRxp.ReplaceAllString(v.Text, "")
+
+			if v.User == p.Authorizations[0].UserID {
+				role = "model"
+			}
+			history := &genai.Content{
+				Parts: []genai.Part{
+					genai.Text(t),
+				},
+				Role: role,
+			}
+			histories[i] = history
+		}
+		for _, h := range histories {
+			log.Printf("DEBUG history is %+v\n", h)
+		}
+		cs.History = histories
+
+		// Send Chat
+		resp, err := cs.SendMessage(ctx, genai.Text(mentionRxp.ReplaceAllString(p.Event.Text, "")))
+		if err != nil {
+			log.Printf("cs.SendMessage %s", err)
+			fmt.Printf("%+v\n", resp)
+			return
+		}
+
+		// Post Reply
+		reply := fmt.Sprintf("<@%s> %s", p.Event.User, resp.Candidates[0].Content.Parts[0])
+		_, _, err = api.PostMessageContext(
+			ctx,
+			p.Event.Channel,
+			slack.MsgOptionText(reply, false),
+			slack.MsgOptionTS(p.Event.EventTS),
+		)
+		if err != nil {
+			log.Printf("api.PostMessage %s", err)
+			return
+		}
+	}(p)
+}
+
+func handleParameter(w http.ResponseWriter, r *http.Request) (*Payload, bool) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		HandleErr(w, err)
+		handleErr(w, err)
+		return nil, false
 	}
-	// finally must close
 	defer r.Body.Close()
-	var p *Payload
+	p := &Payload{}
 	err = json.Unmarshal(body, p)
 	if err != nil {
-		HandleErr(w, err)
+		handleErr(w, err)
+		return nil, false
+	}
+
+	if p == nil {
+		handleErr(w, errors.New("parameter not found"))
+		return nil, false
 	}
 
 	if p.Type != nil && *p.Type == "url_verification" {
 		res, err := json.Marshal(ChallengeResp{p.Challenge})
 		if err != nil {
-			HandleErr(w, err)
+			handleErr(w, err)
+			return nil, false
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write(res)
-		return
+		return nil, false
 	}
 
+	log.Printf("DEBUG event %+v\n", p.Event)
 	if p.Event == nil {
-		HandleErr(w, errors.New("event not found"))
+		handleErr(w, errors.New("event not found"))
+		return nil, false
 	}
-
-	ctx := context.Background()
-	// Access your API key as an environment variable (see "Set up your API key" above)
-	client, err := genai.NewClient(ctx, option.WithAPIKey(geminiAPIKey))
-	if err != nil {
-		HandleErr(w, err)
+	if p.Event.Type != "app_mention" || p.Event.Text == "" {
+		w.WriteHeader(http.StatusOK)
+		return nil, false
 	}
-	defer client.Close()
-
-	// For text-only input, use the gemini-pro model
-	model := client.GenerativeModel("gemini-pro")
-	resp, err := model.GenerateContent(ctx, genai.Text("こんにちは"))
-	if err != nil {
-		HandleErr(w, err)
-	}
-
-	reply := fmt.Sprintf("%s", resp.Candidates[0].Content.Parts[0])
-
-	api := slack.New(botToken)
-	// If you set debugging, it will log all requests to the console
-	// Useful when encountering issues
-	// slack.New("YOUR_TOKEN_HERE", slack.OptionDebug(true))
-	params := slack.NewPostMessageParameters()
-	params.Channel = p.Event.Channel
-	params.ThreadTimestamp = p.Event.ThreadTS
-	params.User = p.Event.User
-	opts := slack.MsgOptionPostMessageParameters(params)
-	_, _, err = api.PostMessage(params.Channel, slack.MsgOptionText(reply, true), opts)
-	if err != nil {
-		HandleErr(w, err)
-	}
+	w.WriteHeader(http.StatusOK)
+	return p, true
 }
 
-func HandleErr(w http.ResponseWriter, err error) {
+func handleErr(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusInternalServerError)
-	res, err := json.Marshal(err)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	w.Write(res)
+	w.Header().Add("X-Slack-No-Retry", "1")
+	log.Printf("error %v\n", err)
+	w.Write([]byte(err.Error()))
 }
