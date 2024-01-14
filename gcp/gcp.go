@@ -92,8 +92,8 @@ func GeminiSlack(w http.ResponseWriter, r *http.Request) {
 		history, newText := buildChatHistory(msgs, p.Authorizations[0].UserID, inputText)
 		cs.History = history
 		inputText = newText
-		// Send Chat
 
+		// Send Chat Request
 		resp, err := cs.SendMessage(ctx, genai.Text(inputText))
 		if err != nil {
 			log.Printf("cs.SendMessage %s", err)
