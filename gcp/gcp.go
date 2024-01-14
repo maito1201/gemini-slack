@@ -74,6 +74,7 @@ func GeminiSlack(w http.ResponseWriter, r *http.Request) {
 		defer client.Close()
 		model := client.GenerativeModel("gemini-pro")
 		cs := model.StartChat()
+		inputText := mentionRxp.ReplaceAllString(p.Event.Text, "")
 
 		// Get Reply History
 		replyParams := &slack.GetConversationRepliesParameters{
@@ -88,35 +89,12 @@ func GeminiSlack(w http.ResponseWriter, r *http.Request) {
 
 		// Build Chat History
 		msgs, _, _, err := api.GetConversationRepliesContext(ctx, replyParams)
-		for _, m := range msgs {
-			log.Printf("msgs %v\n", m)
-		}
-		if len(msgs) > 0 {
-			msgs = msgs[:len(msgs)-1]
-		}
-		histories := make([]*genai.Content, len(msgs))
-		for i, v := range msgs {
-			role := "user"
-			t := mentionRxp.ReplaceAllString(v.Text, "")
-
-			if v.User == p.Authorizations[0].UserID {
-				role = "model"
-			}
-			history := &genai.Content{
-				Parts: []genai.Part{
-					genai.Text(t),
-				},
-				Role: role,
-			}
-			histories[i] = history
-		}
-		for _, h := range histories {
-			log.Printf("DEBUG history is %+v\n", h)
-		}
-		cs.History = histories
-
+		history, newText := buildChatHistory(msgs, p.Authorizations[0].UserID, inputText)
+		cs.History = history
+		inputText = newText
 		// Send Chat
-		resp, err := cs.SendMessage(ctx, genai.Text(mentionRxp.ReplaceAllString(p.Event.Text, "")))
+
+		resp, err := cs.SendMessage(ctx, genai.Text(inputText))
 		if err != nil {
 			log.Printf("cs.SendMessage %s", err)
 			fmt.Printf("%+v\n", resp)
@@ -168,7 +146,6 @@ func handleParameter(w http.ResponseWriter, r *http.Request) (*Payload, bool) {
 		return nil, false
 	}
 
-	log.Printf("DEBUG event %+v\n", p.Event)
 	if p.Event == nil {
 		handleErr(w, errors.New("event not found"))
 		return nil, false
@@ -186,4 +163,43 @@ func handleErr(w http.ResponseWriter, err error) {
 	w.Header().Add("X-Slack-No-Retry", "1")
 	log.Printf("error %v\n", err)
 	w.Write([]byte(err.Error()))
+}
+
+func buildChatHistory(msgs []slack.Message, botID string, inputText string) ([]*genai.Content, string) {
+	if len(msgs) > 0 {
+		msgs = msgs[:len(msgs)-1]
+	}
+	histories := []*genai.Content{}
+	// Merge consecutive posts of users
+	for i, v := range msgs {
+		role := "user"
+		t := mentionRxp.ReplaceAllString(v.Text, "")
+
+		if v.User == botID {
+			role = "model"
+		}
+		history := &genai.Content{
+			Parts: []genai.Part{
+				genai.Text(t),
+			},
+			Role: role,
+		}
+		if i > 0 && len(histories) >= 1 {
+			previousContent := histories[len(histories)-1]
+			if previousContent.Role == role {
+				previousContent.Parts = []genai.Part{genai.Text(fmt.Sprintf("%s, %s", previousContent.Parts[0], t))}
+			} else {
+				histories = append(histories, history)
+			}
+		} else {
+			histories = append(histories, history)
+		}
+	}
+	// If user post is last, It is merged to input Text
+	if len(histories) > 0 && histories[len(histories)-1].Role == "user" {
+		newText := fmt.Sprintf("%s, %s", histories[len(histories)-1].Parts[0], inputText)
+		inputText = newText
+		histories = histories[:len(histories)-1]
+	}
+	return histories, inputText
 }
